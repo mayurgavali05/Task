@@ -9,17 +9,6 @@ dotenv.config();
 
 const app = express();
 
-// FACEBOOK_APP_ID=1481486629939190
-// FACEBOOK_APP_SECRET=d740265d178aa62550b578362c46fc6d
-// CALLBACK_URL=http://localhost:5000/auth/facebook/callback
-// SESSION_SECRET=secret123
-
-// FACEBOOK_CLIENT_ID=1053055676988098
-// FACEBOOK_CLIENT_SECRET=1b40a0ed7c6009420fe18ba1e1caf826
-// FB_REDIRECT_URI=http://localhost:3000/facebook/callback
-
-
-
 const FACEBOOK_CLIENT_ID = process.env.FACEBOOK_CLIENT_ID;
 const FACEBOOK_CLIENT_SECRET = process.env.FACEBOOK_CLIENT_SECRET;
 const FB_REDIRECT_URI = process.env.FB_REDIRECT_URI;
@@ -29,89 +18,78 @@ passport.use(
     {
       clientID: FACEBOOK_CLIENT_ID,
       clientSecret: FACEBOOK_CLIENT_SECRET,
-      callbackURL: "/facebook",
-      profileFields: ["emails", "displayName", "name", "picture"],
+      callbackURL: FB_REDIRECT_URI,
+      profileFields: ["id", "displayName", "emails", "picture.type(large)"]
     },
-    (accessToken, refreshToken, profile, callback) => {
+    (accessToken, refreshToken, profile, done) => {
       profile.accessToken = accessToken;
-      callback(null, profile);
+      return done(null, profile);
     }
   )
 );
 
-passport.serializeUser((user, callback) => {
-  callback(null, user);
+passport.serializeUser((user, done) => {
+  done(null, user);
 });
-
-passport.deserializeUser((user, callback) => {
-  callback(null, user);
+passport.deserializeUser((user, done) => {
+  done(null, user);
 });
 
 app.use(
   session({
-    secret: process.env.SESSION_SECRET,
-    resave: true,
-    saveUninitialized: true,
+    secret: process.env.SESSION_SECRET || "secret123",
+    resave: false,
+    saveUninitialized: false
   })
 );
-
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Step 1: Start Facebook login
 app.get(
   "/login/facebook",
   passport.authenticate("facebook", { scope: ["email", "pages_show_list"] })
 );
 
-app.get("/facebook", passport.authenticate("facebook"), (req, res) => {
-  const fbAuthURL = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${FACEBOOK_CLIENT_ID}&redirect_uri=${encodeURIComponent(
-    FB_REDIRECT_URI
-  )}&scope=email,public_profile,pages_show_list`;
-  res.redirect(fbAuthURL);
-});
+// Step 2: Callback from Facebook
+app.get(
+  "/facebook/callback",
+  passport.authenticate("facebook", { failureRedirect: "/" }),
+  (req, res) => {
+    res.redirect("/api/pages");
+  }
+);
 
-
+// Step 3: Fetch Pages using stored token
 app.get("/api/pages", async (req, res) => {
-  const { code } = req.query;
+  if (!req.user || !req.user.accessToken) {
+    return res.status(401).json({ error: "Not logged in" });
+  }
 
   try {
-    const tokenResponse = await axios.get(
-      `https://graph.facebook.com/v20.0/oauth/access_token`,
-      {
-        params: {
-          client_id: FACEBOOK_CLIENT_ID,
-          client_secret: FACEBOOK_CLIENT_SECRET,
-          redirect_uri: FB_REDIRECT_URI,
-          code,
-        },
-      }
-    );
-
-    const accessToken = tokenResponse.data.access_token;
-
-    // Get pages
     const pagesResponse = await axios.get(
-      `https://graph.facebook.com/me/accounts`,
-      { headers: { Authorization: `Bearer ${accessToken}` } }
+      `https://graph.facebook.com/v20.0/me/accounts`,
+      { headers: { Authorization: `Bearer ${req.user.accessToken}` } }
     );
-
-    res.json(pagesResponse.data.data);
+    res.json(pagesResponse.data);
   } catch (error) {
     console.error(error.response?.data || error.message);
-    res.status(500).json({ error: "Facebook login failed" });
+    res.status(500).json({ error: "Failed to fetch pages" });
   }
 });
 
+// Logout
 app.get("/logout", (req, res) => {
   req.logout(() => {
     res.redirect("/");
   });
 });
 
+// Root
 app.get("/", (req, res) => {
-  res.send(req.user ? req.user : "Not logged in, login with Facebook");
+  res.send(req.user ? req.user : "Not logged in. <a href='/login/facebook'>Login with Facebook</a>");
 });
 
 app.listen(process.env.PORT || 5000, () => {
-  console.log(`Server started on port ${process.env.PORT || 5000}`);
+  console.log(`Server running on port ${process.env.PORT || 5000}`);
 });
